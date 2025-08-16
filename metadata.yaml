@@ -2,4 +2,4 @@ name: astrbot_plugin_qq_music # 这是你的插件的唯一识别名。
 desc: "qq音乐点歌插件" # 插件简短描述
 version: v1.0 # 插件版本号。格式：v1.1.1 或者 v1.1
 author: bandaotehe # 作者
-repo: https://github.com/bandaotehe/astrbot_plugin_qq_music.git # 插件的仓库地址
+repo: https://github.com/bandaotehe/astrbot_plugin_qq_music # 插件的仓库地址
