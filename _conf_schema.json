@@ -1,0 +1,6 @@
+{
+  "music_server": {
+    "description": "music服务的服务IP地址",
+    "type": "string"
+  }
+}
