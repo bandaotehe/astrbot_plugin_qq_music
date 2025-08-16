@@ -20,14 +20,15 @@ class MusicPlugin(Star):
     @filter.command("点歌")
     async def search_music(self, event: AstrMessageEvent):
         """搜索歌曲：/点歌 [关键词]"""
-        keyword = event.message_str.strip()
+        keyword = event.get_message_str()
+        logger.info(f"用户 {event.get_sender_id()} 搜索歌曲：{keyword}")
         if not keyword:
             yield event.plain_result("请输入搜索关键词，例如：/点歌 七里香")
             return
 
         try:
             # 提取歌名
-            keyword = keyword.split(" ")[0]
+            keyword = keyword.replace("点歌", "", 1).strip()
             # 调用搜索接口
             logger.info(f"开始搜索歌曲：{keyword}")
             results = self.search(keyword)
@@ -109,7 +110,8 @@ class MusicPlugin(Star):
         """搜索歌曲"""
         response = requests.get(f"{self.music_server}getSmartbox?key={keyword}")
         data = response.json()
-        logger.info(f"搜索结果：{data}")
+        song_list = data["response"]["data"]["song"]["itemlist"]
+        return song_list
 
 
     def getSongUrl(self, song_id: int):
