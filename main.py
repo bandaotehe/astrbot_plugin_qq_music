@@ -1,6 +1,8 @@
 import os
 from urllib.parse import urlparse
 
+import numpy as np
+
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star, register
 from astrbot.api import AstrBotConfig
@@ -8,6 +10,7 @@ import astrbot.api.message_components as Comp
 from astrbot.api import logger
 import requests
 import soundfile as sf
+import librosa
 
 
 @register("astrbot_plugin_qq_music", "bandaotehe", "点歌插件", "1.0", "https://github.com/bandaotehe/astrbot_plugin_qq_music")
@@ -85,7 +88,7 @@ class MusicPlugin(Star):
             song_id = songs[index]["mid"]
             song_url = self.getSongUrl(song_id,event)
             ##转换音频格式
-            output = self.flac_to_wav_from_url(song_url)
+            output = self.flac_to_wav_with_size_control(song_url)
             chain = [
                 Comp.Record(file=output, url=output)
             ]
@@ -143,53 +146,108 @@ class MusicPlugin(Star):
             event.plain_result("❌ 无法播放，原因：链接为空或报错")
             return None  # 明确返回 None 表示失败
 
-    def download_flac(self,url, local_path=None):
+    def download_flac(self, url, local_path=None):
         """
         从网络URL下载FLAC文件到本地
         :param url: FLAC文件的网络URL
         :param local_path: 本地保存路径(可选)
         :return: 本地文件路径
         """
-        if local_path is None:
-            # 从URL中提取文件名
-            parsed = urlparse(url)
-            filename = os.path.basename(parsed.path.split('?')[0])  # 去除查询参数
-            local_path = filename
-        # 分块下载大文件
-        response = requests.get(url, stream=True)
-        response.raise_for_status()  # 检查请求是否成功
-        with open(local_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                if chunk:  # 过滤掉保持连接的空白块
-                    f.write(chunk)
-        return local_path
+        try:
+            if local_path is None:
+                # 从URL中提取文件名
+                parsed = urlparse(url)
+                filename = os.path.basename(parsed.path.split('?')[0])  # 去除查询参数
+                local_path = filename
+                logger.debug(f"自动生成本地保存路径: {local_path}")
+            logger.info(f"开始下载FLAC文件: {url}")
+            # 分块下载大文件
+            response = requests.get(url, stream=True)
+            response.raise_for_status()  # 检查请求是否成功
+            with open(local_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:  # 过滤掉保持连接的空白块
+                        f.write(chunk)
+            file_size = os.path.getsize(local_path) / (1024 * 1024)  # 计算文件大小(MB)
+            logger.info(f"FLAC文件下载完成: {local_path} (大小: {file_size:.2f}MB)")
+            return local_path
+        except Exception as e:
+            logger.error(f"下载FLAC文件失败: {url} - 错误: {str(e)}")
+            raise  # 重新抛出异常以便上层处理
 
-    def flac_to_wav_from_url(self, flac_url, output_wav=None, keep_flac=False):
+    def flac_to_wav_with_size_control(
+            self,
+            flac_url,
+            target_size_mb=5,
+            output_wav=None,
+            keep_flac=False,
+    ):
         """
-        从网络URL下载FLAC并转换为WAV
-        :param flac_url: FLAC文件的网络URL
-        :param output_wav: 输出WAV文件路径(可选)
-        :param keep_flac: 是否保留下载的FLAC文件
-        :return: WAV文件路径
+        从 URL 下载 FLAC 并转换为 WAV，文件大小控制在目标值附近
+        :param flac_url: FLAC 文件 URL
+        :param target_size_mb: 目标文件大小（MB，默认 5MB）
+        :param output_wav: 输出路径（可选）
+        :param keep_flac: 是否保留 FLAC 文件
+        :return: WAV 文件路径
         """
-        # 下载FLAC文件
         try:
+            # 下载 FLAC 文件
             local_flac = self.download_flac(flac_url)
-        except Exception as e:
-            return None
-        # 设置输出WAV路径
-        if output_wav is None:
-            output_wav = local_flac.replace('.flac', '.wav')
-        # 转换FLAC到WAV
-        try:
+            logger.info(f"FLAC 下载完成: {local_flac}")
+
+            # 读取音频数据
             data, samplerate = sf.read(local_flac)
-            sf.write(output_wav, data, samplerate)
+            duration = len(data) / samplerate  # 音频时长（秒）
+            channels = data.shape[1] if len(data.shape) > 1 else 1  # 声道数
+            # 计算当前参数的文件大小
+            original_size_mb = (samplerate * 16 * channels * duration) / (8 * 1024 * 1024)
+            logger.info(f"原始 WAV 预估大小: {original_size_mb:.2f}MB")
+            # 自动调整参数以接近目标大小
+            if original_size_mb > target_size_mb:
+                # 优先降低采样率，再降低比特深度，最后转单声道
+                adjusted_samplerate = samplerate
+                adjusted_subtype = "PCM_16"
+                adjusted_channels = channels
+                # 逐步调整参数
+                while original_size_mb > target_size_mb * 1.1:  # 留 10% 余量
+                    if adjusted_samplerate > 22050:
+                        adjusted_samplerate = 22050  # 降到 22.05kHz
+                    elif adjusted_subtype == "PCM_16":
+                        adjusted_subtype = "PCM_8"  # 降到 8bit
+                    elif adjusted_channels == 2:
+                        adjusted_channels = 1  # 转单声道
+                    else:
+                        break  # 无法再压缩
+
+                    # 重新计算大小
+                    original_size_mb = (adjusted_samplerate * (
+                        8 if adjusted_subtype == "PCM_8" else 16) * adjusted_channels * duration) / (8 * 1024 * 1024)
+                logger.info(f"调整后参数: {adjusted_samplerate}Hz, {adjusted_subtype}, {adjusted_channels}声道")
+                # 应用调整
+                if adjusted_samplerate != samplerate:
+                    data = librosa.resample(data.T, orig_sr=samplerate, target_sr=adjusted_samplerate).T
+                if adjusted_channels == 1 and channels == 2:
+                    data = np.mean(data, axis=1, keepdims=True)  # 立体声 → 单声道
+
+            # 设置输出路径
+            if output_wav is None:
+                output_wav = local_flac.replace(".flac", ".wav")
+
+            # 写入 WAV 文件
+            sf.write(
+                output_wav,
+                data,
+                adjusted_samplerate if 'adjusted_samplerate' in locals() else samplerate,
+                subtype=adjusted_subtype if 'adjusted_subtype' in locals() else "PCM_16",
+            )
+            # 验证最终文件大小
+            final_size_mb = os.path.getsize(output_wav) / (1024 * 1024)
+            logger.info(f"转换完成: {output_wav} (大小: {final_size_mb:.2f}MB)")
+            return output_wav
         except Exception as e:
-            logger.error(f"FLAC转换WAV失败: {e}")
+            logger.error(f"转换失败: {e}")
             return None
         finally:
-            # 清理临时FLAC文件
             if not keep_flac and os.path.exists(local_flac):
                 os.remove(local_flac)
-        return output_wav
 
