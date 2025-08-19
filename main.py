@@ -84,9 +84,12 @@ class MusicPlugin(Star):
 
             # 获取歌曲信息
             song_id = songs[index]["mid"]
-            song_url = self.getSongUrl(song_id,event)
+            logger.info(f"开始获取歌曲信息：{song_id}")
+            song_url = self.gets_ong_url(song_id)
+            logger.info(f"歌曲链接：{song_url}")
             ##转换音频格式
-            output = self.flac_to_wav_with_size_control(song_url,event=event)
+            output = self.flac_to_wav_with_size_control(song_url)
+            logger.info(f"转换后的文件路径：{output}")
             chain = [
                 Comp.Record(file=output, url=output)
             ]
@@ -121,28 +124,26 @@ class MusicPlugin(Star):
             songs.append(song_dict)
         return songs
 
-    def getSongUrl(self, song_id: str, event: AstrMessageEvent):
+    def gets_ong_url(self, song_id: str):
+        logger.info(f"开始获取歌曲信息gets_ong_url：{song_id}")
         try:
             response = requests.get(f"{self.music_server}v2/music/tencent/geturl?mid={song_id}")
             response.raise_for_status()  # 检查 HTTP 错误
             data = response.json()
         except Exception as e:
             logger.error(f"❌ 请求歌曲链接失败: {e}")
-            yield event.plain_result("❌ 获取歌曲信息失败，请稍后重试。")
-            return None
+            raise
+        logger.info(f"播放链接：{data}")
         # 安全查找 playUrl
         if data["code"] != 200:
             logger.error(f"❌ 请求歌曲链接失败")
-            yield event.plain_result("未找到该歌曲链接,请重新选择序号")
-        logger.info(f"播放链接：{data}")
         play_url = data.get("data", {}).get("url", {})
         if play_url:
             logger.info(f"播放链接：{play_url}")
             return play_url
         else:
             logger.error("❌ 无法播放，原因：链接为空或报错")
-            yield event.plain_result("❌ 无法播放，原因：链接为空或报错")
-            return None  # 明确返回 None 表示失败
+            raise
 
     def download_flac(self, url, local_path=None):
         """
@@ -179,8 +180,7 @@ class MusicPlugin(Star):
             target_size_mb=5,
             output_wav=None,
             keep_flac=False,
-            event: AstrMessageEvent = None
-    ):
+    ) -> str :
         """
         从 URL 下载 FLAC 并转换为 WAV，文件大小控制在目标值附近
         :param flac_url: FLAC 文件 URL
@@ -243,8 +243,7 @@ class MusicPlugin(Star):
             return output_wav
         except Exception as e:
             logger.error(f"转换失败: {e}")
-            yield event.plain_result("❌ 无法播放，原因：链接为空")
-            return None
+            raise
         finally:
             if not keep_flac and os.path.exists(local_flac):
                 os.remove(local_flac)
